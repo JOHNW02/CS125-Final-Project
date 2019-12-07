@@ -4,6 +4,7 @@ from torchvision import transforms
 from glob import glob
 import pandas as pd
 import torch
+import torch.nn as nn
 from sklearn.model_selection import train_test_split
 import torch
 from PIL import Image
@@ -59,10 +60,11 @@ def predict_image(image):
     image_tensor = test_transforms(image).float()
     image_tensor = image_tensor.unsqueeze_(0)
     output = model_conv(image_tensor)
-    index = output.data.cpu().numpy().argmax()
+    index = output.data.gpu().numpy()
     return index
 
 if __name__ == '__main__':
+
     base_skin_dir = os.path.join('D:\\FinalProject', 'input')
 
     imageid_path_dict = {os.path.splitext(os.path.basename(x))[0]: x
@@ -87,7 +89,8 @@ if __name__ == '__main__':
     model_conv = models.resnet50(pretrained=True)
     num_ftrs = model_conv.fc.in_features
     model_conv.fc = torch.nn.Linear(num_ftrs, 7)
-
+    model_conv = nn.Sequential(model_conv, nn.Softmax())
+    model_conv = model_conv.to(device)
     train_df, test_df = train_test_split(tile_df, test_size=0.1)
     # We can split the test set again in a validation set and a true test set:
     validation_df, test_df = train_test_split(test_df, test_size=0.5)
@@ -101,27 +104,63 @@ if __name__ == '__main__':
     validation_set = Dataset(validation_df, transform=composed)
     validation_generator = data.DataLoader(validation_set, **params)
 
-    optimizer = torch.optim.Adam(model_conv.parameters(), lr=1e-6)
+    optimizer = torch.optim.Adam(model_conv.parameters(), lr=1e-7)
     criterion = torch.nn.CrossEntropyLoss()
 
 
     device = 'cuda'
-    max_epochs = 20
+    max_epochs = 50
     trainings_error = []
     validation_error = []
-    '''
+    best_loss = 1000
+
+    for i in range(20):
+        model_conv = models.resnet50(pretrained=True)
+        num_ftrs = model_conv.fc.in_features
+        model_conv.fc = torch.nn.Linear(num_ftrs, 7)
+        model_conv = nn.Sequential(model_conv, nn.Softmax())
+        model_conv.load_state_dict(torch.load('D:\\FinalProject\\BEST_save.pth'))
+        model_conv1 = model_conv
+        model_conv = model_conv.to(device)
+        x = Image.open('D:\\FinalProject\\input\\HAM10000_images_part_1\\ISIC_0024306.jpg')
+        image_tensor = test_transforms(x).float()
+        image_tensor = image_tensor.unsqueeze_(0).to(device)
+        output = model_conv1(image_tensor)
+        index = output.data.cpu().numpy()
+        print("Model {}".format(i))
+        print(index)
+
+        model_conv.eval()
+        test_set = Dataset(validation_df, transform=composed)
+        test_generator = data.SequentialSampler(validation_set)
+        result_array = []
+        gt_array = []
+        for i in test_generator:
+            data_sample, y = validation_set.__getitem__(i)
+            #data_sample = data_sample.unsqueeze(0)
+            data_gpu = data_sample.unsqueeze(0).to(device)
+            #output = model_conv(data_sample)
+            output = model_conv(data_gpu)
+            result = torch.argmax(output)
+            result_array.append(result.item())
+            gt_array.append(y.item())
+        correct_results = np.array(result_array)==np.array(gt_array)
+        sum_correct = np.sum(correct_results)
+        accuracy = sum_correct/test_generator.__len__()
+        print(accuracy)
+'''
     for epoch in range(max_epochs):
         print('epoch:', epoch)
         count_train = 0
         trainings_error_tmp = []
         model_conv.train()
         for data_sample, y in training_generator:
-            #data_gpu = data_sample.to(device)
-            #y_gpu = y.to(device)
-            output = model_conv(data_sample)
-            #output = model_conv(data_gpu)
-            err = criterion(output, y)
-            #err = criterion(output, y_gpu)
+            data_gpu = data_sample.to(device)
+            y_gpu = y.to(device)
+            #output = model_conv(data_sample)
+            output = model_conv(data_gpu)
+            #err = criterion(output, y)
+            err = criterion(output, y_gpu)
             err.backward()
             optimizer.step()
             trainings_error_tmp.append(err.item())
@@ -131,19 +170,19 @@ if __name__ == '__main__':
                 mean_trainings_error = np.mean(trainings_error_tmp)
                 trainings_error.append(mean_trainings_error)
                 print('trainings error:', mean_trainings_error)
-                torch.save(model_conv.state_dict(), 'D:\\FinalProject\\last_save.pth')
+                torch.save(model_conv.state_dict(), 'D:\\FinalProject\\last_save{}.pth'.format(epoch))
                 break
         with torch.set_grad_enabled(False):
             validation_error_tmp = []
             count_val = 0
             model_conv.eval()
             for data_sample, y in validation_generator:
-                #data_gpu = data_sample.to(device)
-                #y_gpu = y.to(device)
-                output = model_conv(data_sample)
-                #output = model_conv(data_gpu)
-                err = criterion(output, y)
-                #err = criterion(output, y_gpu)
+                data_gpu = data_sample.to(device)
+                y_gpu = y.to(device)
+                #output = model_conv(data_sample)
+                output = model_conv(data_gpu)
+                #err = criterion(output, y)
+                err = criterion(output, y_gpu)
                 validation_error_tmp.append(err.item())
                 count_val += 1
                 if count_val >= 10:
@@ -151,34 +190,14 @@ if __name__ == '__main__':
                     mean_val_error = np.mean(validation_error_tmp)
                     validation_error.append(mean_val_error)
                     print('validation error:', mean_val_error)
+                    if mean_val_error < best_loss:
+                        best_loss = mean_val_error
+                        torch.save(model_conv.state_dict(), 'D:\\FinalProject\\BEST_save.pth')
+                        print("Better model found!")
                     break
     plt.plot(trainings_error, label = 'training error')
     plt.plot(validation_error, label = 'validation error')
     plt.legend()
     plt.show()
 '''
-
-    model_conv.load_state_dict(torch.load('D:\\FinalProject\\last_save.pth'))
-    x = Image.open('D:\\FinalProject\\input\\HAM10000_images_part_1\\ISIC_0024306.jpg')
-    print(list(lesion_type_dict.values())[predict_image(x)])
-    '''
-    model_conv.eval()
-    test_set = Dataset(validation_df, transform=composed)
-    test_generator = data.SequentialSampler(validation_set)
-    result_array = []
-    gt_array = []
-    for i in test_generator:
-        data_sample, y = validation_set.__getitem__(i)
-        data_sample = data_sample.unsqueeze(0);
-        #data_gpu = data_sample.unsqueeze(0).to(device)
-        output = model_conv(data_sample)
-        #output = model_conv(data_gpu)
-        result = torch.argmax(output)
-        result_array.append(result.item())
-        gt_array.append(y.item())
-    correct_results = np.array(result_array)==np.array(gt_array)
-    sum_correct = np.sum(correct_results)
-    accuracy = sum_correct/test_generator.__len__()
-    print(accuracy)
-    '''
 
